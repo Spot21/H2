@@ -86,7 +86,16 @@ class StudentHandler:
 
         try:
             if query.data == "student_recommendations":
-                await self.show_recommendations(update, context)
+                try:
+                    logger.info(f"Обработка кнопки student_recommendations в StudentHandler: user_id={user_id}")
+                    await self.show_recommendations(update, context)
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке кнопки student_recommendations: {e}")
+                    logger.error(traceback.format_exc())
+                    await query.edit_message_text(
+                        "Произошла ошибка при формировании рекомендаций. Пожалуйста, попробуйте позже."
+                    )
+
             elif query.data.startswith("quiz_start_"):
                 # Начало теста по выбранной теме
                 topic_id_str = query.data.replace("quiz_start_", "")
@@ -691,67 +700,86 @@ class StudentHandler:
                 parse_mode="Markdown"
             )
 
-    # Заменить в файле handlers/student.py метод show_recommendations на следующий:
-
     async def show_recommendations(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показ персонализированных рекомендаций для ученика"""
         user_id = update.effective_user.id
         query = update.callback_query
 
         try:
-            # Получаем расширенную статистику
-            from services.stats_service import get_user_stats
-            result = get_user_stats(user_id, "month")
+            logger.info(f"Запрос рекомендаций от пользователя {user_id}")
 
-            if not result["success"]:
+            # Получаем статистику пользователя за месяц
+            stats_result = get_user_stats(user_id, "month")
+
+            if not stats_result["success"]:
+                message = f"Ошибка при получении статистики: {stats_result['message']}"
                 if query:
-                    await query.edit_message_text(f"Ошибка: {result['message']}")
+                    await query.edit_message_text(message)
                 else:
-                    await update.message.reply_text(f"Ошибка: {result['message']}")
+                    await update.message.reply_text(message)
                 return
 
-            if not result.get("has_data", False):
-                # Используем готовую клавиатуру
+            if not stats_result.get("has_data", False):
+                # Если нет данных, показываем общее сообщение с рекомендациями
                 from keyboards.student_kb import student_main_keyboard
                 reply_markup = student_main_keyboard()
 
-                message = "У вас пока недостаточно данных для формирования рекомендаций. Пройдите больше тестов, чтобы получить персонализированные советы."
+                message = (
+                    "📊 *Рекомендации*\n\n"
+                    "У вас пока недостаточно данных для формирования персональных рекомендаций.\n\n"
+                    "Общие советы:\n"
+                    "• Старайтесь проходить тесты регулярно, 2-3 раза в неделю\n"
+                    "• Начинайте с тем, которые вам интересны\n"
+                    "• Для лучшего запоминания, возвращайтесь к пройденным темам\n"
+                    "• Обращайте внимание на объяснения к вопросам\n\n"
+                    "Пройдите больше тестов, чтобы получить персональные рекомендации!"
+                )
 
                 if query:
-                    await query.edit_message_text(message, reply_markup=reply_markup)
+                    await query.edit_message_text(message, reply_markup=reply_markup, parse_mode="Markdown")
                 else:
-                    await update.message.reply_text(message, reply_markup=reply_markup)
+                    await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="Markdown")
                 return
 
-            # Определяем слабые темы
-            try:
-                stats_data = result["stats"]
+            # Определяем слабые темы пользователя
+            weak_topics = []
 
-                # Считаем темы с результатом ниже 70% слабыми
-                weak_topics = []
-                with get_session() as session:
-                    topic_results = session.query(TestResult, Topic).join(
-                        Topic, TestResult.topic_id == Topic.id
-                    ).filter(
-                        TestResult.user_id == user_id,
-                        TestResult.percentage < 70
-                    ).all()
+            # Безопасный подход: используем session.query с явной обработкой запроса
+            with get_session() as session:
+                # Получаем темы, где процент ответов ниже 70%
+                # Используем join, чтобы объединить TestResult и Topic
+                from sqlalchemy import func, and_
+                from database.models import TestResult, Topic, User
 
-                    for result_obj, topic in topic_results:
-                        weak_topics.append({
-                            "id": topic.id,
-                            "name": topic.name,
-                            "avg_score": round(result_obj.percentage, 1)
-                        })
-            except Exception as e:
-                logger.error(f"Ошибка при получении слабых тем: {e}")
-                logger.error(traceback.format_exc())
-                weak_topics = []
+                query_result = session.query(
+                    Topic.id,
+                    Topic.name,
+                    func.avg(TestResult.percentage).label('avg_score')
+                ).join(
+                    TestResult, Topic.id == TestResult.topic_id
+                ).filter(
+                    TestResult.user_id == session.query(User.id).filter(User.telegram_id == user_id).scalar_subquery()
+                ).group_by(
+                    Topic.id, Topic.name
+                ).having(
+                    func.avg(TestResult.percentage) < 70
+                ).all()
+
+                # Преобразуем результаты запроса в список словарей
+                for topic_id, topic_name, avg_score in query_result:
+                    weak_topics.append({
+                        "id": topic_id,
+                        "name": topic_name,
+                        "avg_score": round(avg_score, 1)
+                    })
+
+            # Сортируем слабые темы по возрастанию среднего балла
+            weak_topics.sort(key=lambda x: x["avg_score"])
 
             # Формируем текст с рекомендациями
-            text = "🔍 *Персональные рекомендации*\n\n"
+            stats_data = stats_result["stats"]
 
-            # Общая информация
+            text = "🔍 *Персональные рекомендации*\n\n"
             text += f"Ваш средний результат: *{stats_data['average_score']}%*\n\n"
 
             # Рекомендации по слабым темам
@@ -760,12 +788,15 @@ class StudentHandler:
                 for topic in weak_topics:
                     text += f"• {topic['name']} - {topic['avg_score']}%\n"
                 text += "\n"
+            else:
+                text += "👍 *Отлично!* У вас нет тем с низкими результатами.\n\n"
 
             # Общие советы
             text += "*Общие советы:*\n"
             text += "• Занимайтесь регулярно, хотя бы 3-4 раза в неделю\n"
-            text += "• Уделяйте особое внимание темам с низкими результатами\n"
-            text += "• Старайтесь улучшать предыдущие результаты, проходя тесты несколько раз\n"
+            if weak_topics:
+                text += "• Уделяйте особое внимание темам с низкими результатами\n"
+            text += "• Проходите тесты несколько раз для лучшего запоминания\n"
             text += "• Используйте детальный анализ для изучения своих ошибок\n"
 
             # Создаем клавиатуру с кнопками действий
@@ -786,6 +817,10 @@ class StudentHandler:
                 InlineKeyboardButton("📝 Начать тест", callback_data="common_start_test")
             ])
 
+            keyboard.append([
+                InlineKeyboardButton("🔙 Назад к меню", callback_data="common_back_to_main")
+            ])
+
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             # Отправляем сообщение
@@ -795,10 +830,10 @@ class StudentHandler:
                 await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
             # Если есть график прогресса, отправляем его
-            if "charts" in result and "progress_chart" in result["charts"]:
+            if "charts" in stats_result and "progress_chart" in stats_result["charts"]:
                 await context.bot.send_photo(
                     chat_id=user_id,
-                    photo=result["charts"]["progress_chart"],
+                    photo=stats_result["charts"]["progress_chart"],
                     caption="📈 Динамика результатов за последний месяц"
                 )
 
