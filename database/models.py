@@ -11,7 +11,7 @@ question_result = Table(
     Base.metadata,
     Column('question_id', Integer, ForeignKey('questions.id')),
     Column('test_result_id', Integer, ForeignKey('test_results.id')),
-    Column('is_correct', Boolean, default=False),
+    Column('is_correct', Boolean, default=False, nullable=False),
     Column('user_answer', String),
 )
 
