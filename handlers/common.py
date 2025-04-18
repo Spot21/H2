@@ -129,9 +129,29 @@ class CommonHandler:
                 return
 
         elif callback_data == "student_recommendations":
-            from handlers.student import StudentHandler
-            student_handler = StudentHandler(self.quiz_service)
-            await student_handler.show_recommendations(update, context)
+            logger.info(f"Перенаправление обработки student_recommendations на StudentHandler")
+            try:
+                # Вместо создания нового экземпляра, используем существующий обработчик
+                # из контекста
+                from handlers.student import StudentHandler
+                # Получаем существующий quiz_service
+                if hasattr(self, 'quiz_service'):
+                    # Создаем StudentHandler только если нужно
+                    if not hasattr(context, '_student_handler'):
+                        context._student_handler = StudentHandler(self.quiz_service)
+                    # Вызываем метод show_recommendations
+                    await context._student_handler.show_recommendations(update, context)
+                else:
+                    logger.error("quiz_service не найден в CommonHandler")
+                    await query.edit_message_text(
+                        "Произошла ошибка при формировании рекомендаций. Пожалуйста, попробуйте позже."
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка при обработке student_recommendations в CommonHandler: {e}")
+                logger.error(traceback.format_exc())
+                await query.edit_message_text(
+                    "Произошла ошибка при формировании рекомендаций. Пожалуйста, попробуйте позже."
+                )
 
 
         elif callback_data == "admin_problematic_questions":
