@@ -27,6 +27,21 @@ from keyboards.admin_kb import (
 logger = logging.getLogger(__name__)
 
 
+def get_db_dialect():
+    """Определение диалекта базы данных (PostgreSQL или SQLite)"""
+    try:
+        with get_session() as session:
+            from sqlalchemy import inspect
+            connection = session.connection()
+            inspector = inspect(connection)
+            dialect_name = inspector.engine.dialect.name.lower()
+            return dialect_name
+    except Exception as e:
+        logger.error(f"Ошибка при определении диалекта базы данных: {e}")
+        # Возвращаем SQLite по умолчанию
+        return "sqlite"
+
+
 async def show_topics_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показ списка тем для редактирования"""
     query = update.callback_query
@@ -261,6 +276,7 @@ class AdminHandler:
 
         except Exception as e:
             logger.error(f"Error in show_problematic_questions: {e}")
+            logger.error(traceback.format_exc())
             await query.edit_message_text(
                 f"Произошла ошибка при получении статистики проблемных вопросов: {str(e)}"
             )
@@ -1004,39 +1020,7 @@ class AdminHandler:
                                 InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
                             ]])
                         )
-                    elif query.data.startswith("admin_set_questions_"):
-                        # Установка количества вопросов
-                        count = query.data.replace("admin_set_questions_", "")
 
-                        try:
-                            from services.settings_service import set_setting
-                            set_setting("default_questions_count", count)
-
-                            # Определяем время в зависимости от количества вопросов
-                            questions_count = int(count)
-                            if questions_count <= 10:
-                                time_minutes = 5
-                            elif questions_count <= 15:
-                                time_minutes = 10
-                            else:
-                                time_minutes = 20
-
-                            await query.edit_message_text(
-                                f"✅ Количество вопросов в тесте изменено на {count}.\n"
-                                f"Время на прохождение теста: {time_minutes} минут.\n\n"
-                                "Настройка будет применена к новым тестам.",
-                                reply_markup=InlineKeyboardMarkup([[
-                                    InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
-                                ]])
-                            )
-                        except Exception as e:
-                            logger.error(f"Error setting questions count: {e}")
-                            await query.edit_message_text(
-                                f"Произошла ошибка при изменении настроек: {str(e)}",
-                                reply_markup=InlineKeyboardMarkup([[
-                                    InlineKeyboardButton("🔙 Назад", callback_data="admin_settings")
-                                ]])
-                            )
                     else:
                         # Если файл .env не существует, сообщаем об ошибке
                         await query.edit_message_text(
@@ -1060,6 +1044,40 @@ class AdminHandler:
                         "Настройка будет применена при следующем запуске бота.",
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
+                        ]])
+                    )
+
+            elif query.data.startswith("admin_set_questions_"):
+                # Установка количества вопросов
+                count = query.data.replace("admin_set_questions_", "")
+
+                try:
+                    from services.settings_service import set_setting
+                    set_setting("default_questions_count", count)
+
+                    # Определяем время в зависимости от количества вопросов
+                    questions_count = int(count)
+                    if questions_count <= 10:
+                        time_minutes = 5
+                    elif questions_count <= 15:
+                        time_minutes = 10
+                    else:
+                        time_minutes = 20
+
+                    await query.edit_message_text(
+                        f"✅ Количество вопросов в тесте изменено на {count}.\n"
+                        f"Время на прохождение теста: {time_minutes} минут.\n\n"
+                        "Настройка будет применена к новым тестам.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
+                        ]])
+                    )
+                except Exception as e:
+                    logger.error(f"Error setting questions count: {e}")
+                    await query.edit_message_text(
+                        f"Произошла ошибка при изменении настроек: {str(e)}",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔙 Назад", callback_data="admin_settings")
                         ]])
                     )
 
