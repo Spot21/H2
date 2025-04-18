@@ -9,8 +9,11 @@ from telegram.ext import ContextTypes
 
 from services.stats_service import generate_topic_analytics
 from database.models import User, Topic, Question, TestResult, Achievement, Notification
-from database.db_manager import get_session
+
 from config import ADMINS
+import logging
+from database.models import BotSettings
+from database.db_manager import get_session
 
 # Импортируем клавиатуры
 from keyboards.admin_kb import (
@@ -64,6 +67,54 @@ async def show_topics_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"Произошла ошибка при получении списка тем: {str(e)}\n\n"
             "Пожалуйста, попробуйте еще раз или обратитесь к разработчику."
         )
+
+def get_setting(key: str, default=None):
+    """Получение настройки по ключу"""
+    try:
+        with get_session() as session:
+            setting = session.query(BotSettings).filter(BotSettings.key == key).first()
+            if setting:
+                return setting.value
+            return default
+    except Exception as e:
+        logger.error(f"Ошибка при получении настройки {key}: {e}")
+        return default
+
+
+def set_setting(key: str, value):
+    """Установка настройки"""
+    try:
+        with get_session() as session:
+            setting = session.query(BotSettings).filter(BotSettings.key == key).first()
+            if setting:
+                setting.value = str(value)
+            else:
+                setting = BotSettings(key=key, value=str(value))
+                session.add(setting)
+            session.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка при установке настройки {key}: {e}")
+        return False
+
+
+def get_quiz_settings():
+    """Получение настроек теста"""
+    questions_count = int(get_setting("default_questions_count", "10"))
+
+    # Определение времени в зависимости от количества вопросов
+    if questions_count <= 10:
+        time_limit = 5 * 60  # 5 минут в секундах
+    elif questions_count <= 15:
+        time_limit = 10 * 60  # 10 минут в секундах
+    else:
+        time_limit = 20 * 60  # 20 минут в секундах
+
+    return {
+        "questions_count": questions_count,
+        "time_limit": time_limit,
+        "time_minutes": time_limit // 60
+    }
 
 
 class AdminHandler:
@@ -610,6 +661,116 @@ class AdminHandler:
         # Устанавливаем состояние для пользователя
         context.user_data["admin_state"] = "importing_questions"
 
+    async def show_results_dynamics(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показ динамики результатов тестирования"""
+        query = update.callback_query
+        user_id = update.effective_user.id
+
+        # Проверка прав администратора
+        if str(user_id) not in ADMINS:
+            await query.edit_message_text(
+                "У вас нет прав для доступа к этой информации."
+            )
+            return
+
+        try:
+            # Получаем статистику по динамике за последний месяц
+            with get_session() as session:
+                # Получаем данные за последний месяц
+                from datetime import datetime, timedelta
+                month_ago = datetime.utcnow() - timedelta(days=30)
+
+                # Получаем результаты тестов
+                results = session.query(TestResult).filter(
+                    TestResult.completed_at >= month_ago
+                ).order_by(TestResult.completed_at).all()
+
+                if not results:
+                    # Используем готовую клавиатуру для возврата
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back_main")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    await query.edit_message_text(
+                        "Нет данных о результатах тестов за последний месяц.",
+                        reply_markup=reply_markup
+                    )
+                    return
+
+                # Группируем результаты по дням
+                import pandas as pd
+                results_data = []
+                for result in results:
+                    results_data.append({
+                        "date": result.completed_at.date(),
+                        "percentage": result.percentage
+                    })
+
+                df = pd.DataFrame(results_data)
+                daily_avg = df.groupby("date")["percentage"].mean().reset_index()
+
+                # Создаем график
+                import matplotlib.pyplot as plt
+                from io import BytesIO
+
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.plot(daily_avg["date"], daily_avg["percentage"], marker='o', linestyle='-')
+
+                ax.set_title("Динамика результатов тестирования за последний месяц")
+                ax.set_xlabel("Дата")
+                ax.set_ylabel("Средний процент")
+                ax.grid(True)
+                plt.xticks(rotation=45)
+                plt.tight_layout()
+
+                # Сохраняем график в буфер
+                img_buf = BytesIO()
+                plt.savefig(img_buf, format='png')
+                img_buf.seek(0)
+                plt.close()
+
+                # Отправляем текст
+                text = "📈 *Динамика результатов тестирования*\n\n"
+                text += f"• Период: последние 30 дней\n"
+                text += f"• Всего тестов: {len(results)}\n"
+                text += f"• Средний результат: {df['percentage'].mean():.1f}%\n"
+
+                # Рассчитываем тренд (улучшение или ухудшение)
+                if len(daily_avg) > 1:
+                    first_week = df[df["date"] <= df["date"].min() + timedelta(days=7)]["percentage"].mean()
+                    last_week = df[df["date"] >= df["date"].max() - timedelta(days=7)]["percentage"].mean()
+                    trend_diff = last_week - first_week
+
+                    if abs(trend_diff) > 0.1:
+                        trend_text = "улучшение" if trend_diff > 0 else "ухудшение"
+                        text += f"• Тренд: {trend_text} на {abs(trend_diff):.1f}%\n"
+
+                # Создаем клавиатуру
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back_main")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.edit_message_text(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="Markdown"
+                )
+
+                # Отправляем график
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=img_buf,
+                    caption="Динамика средних результатов по дням"
+                )
+
+        except Exception as e:
+            logger.error(f"Error in show_results_dynamics: {e}")
+            logger.error(traceback.format_exc())
+            await query.edit_message_text(
+                f"Произошла ошибка при получении динамики результатов: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_back_main")
+                ]])
+            )
+
     async def handle_admin_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик нажатий кнопок в панели администратора"""
         global new_state
@@ -639,16 +800,13 @@ class AdminHandler:
                 # Показываем список проблемных вопросов
                 await self.show_problematic_questions(update, context)
 
+            elif query.data == "admin_results_dynamics":
+            # Показываем динамику результатов
+                await self.show_results_dynamics(update, context)
+
             elif query.data == "admin_topic_stats":
                 # Показываем статистику по темам
                 await self.show_topic_stats(update, context)
-            elif query.data == "admin_problematic_questions":
-                # Проблемные вопросы
-                await self.show_problematic_questions(update, context)
-            elif query.data == "admin_results_dynamics":
-                # Динамика результатов
-                # Реализовать этот метод
-                await self.show_results_dynamics(update, context)
 
             elif query.data == "admin_users":
                 # Показываем список пользователей
@@ -792,11 +950,11 @@ class AdminHandler:
                     reply_markup=reply_markup
                 )
 
+
             elif query.data == "admin_setting_reports":
                 # Обработка настройки отчетов родителям
                 from config import ENABLE_PARENT_REPORTS
                 current_state = "включены" if ENABLE_PARENT_REPORTS else "отключены"
-
                 reply_markup = admin_reports_keyboard()
                 await query.edit_message_text(
                     f"Автоматические отчеты родителям сейчас {current_state}.\n\n"
@@ -804,7 +962,16 @@ class AdminHandler:
                     reply_markup=reply_markup
                 )
 
-
+            elif query.data == "admin_setting_questions_count":
+                # Обработка настройки количества вопросов в тесте
+                from services.settings_service import get_setting
+                default_questions_count = get_setting("default_questions_count", "10")
+                reply_markup = admin_questions_count_keyboard()
+                await query.edit_message_text(
+                    f"Текущее количество вопросов в тесте: {default_questions_count}\n\n"
+                    "Выберите новое количество вопросов:",
+                    reply_markup=reply_markup
+                )
 
             elif query.data.startswith("admin_reports_"):
                 # Включение/отключение отчетов
@@ -837,6 +1004,39 @@ class AdminHandler:
                                 InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
                             ]])
                         )
+                    elif query.data.startswith("admin_set_questions_"):
+                        # Установка количества вопросов
+                        count = query.data.replace("admin_set_questions_", "")
+
+                        try:
+                            from services.settings_service import set_setting
+                            set_setting("default_questions_count", count)
+
+                            # Определяем время в зависимости от количества вопросов
+                            questions_count = int(count)
+                            if questions_count <= 10:
+                                time_minutes = 5
+                            elif questions_count <= 15:
+                                time_minutes = 10
+                            else:
+                                time_minutes = 20
+
+                            await query.edit_message_text(
+                                f"✅ Количество вопросов в тесте изменено на {count}.\n"
+                                f"Время на прохождение теста: {time_minutes} минут.\n\n"
+                                "Настройка будет применена к новым тестам.",
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton("🔙 Назад к настройкам", callback_data="admin_settings")
+                                ]])
+                            )
+                        except Exception as e:
+                            logger.error(f"Error setting questions count: {e}")
+                            await query.edit_message_text(
+                                f"Произошла ошибка при изменении настроек: {str(e)}",
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton("🔙 Назад", callback_data="admin_settings")
+                                ]])
+                            )
                     else:
                         # Если файл .env не существует, сообщаем об ошибке
                         await query.edit_message_text(
@@ -1773,13 +1973,28 @@ class AdminHandler:
         query = update.callback_query
 
         from config import ENABLE_PARENT_REPORTS
+        from services.settings_service import get_setting
+
+        # Получаем настройки
+        default_questions_count = get_setting("default_questions_count", "10")
+
+        # Определяем время в зависимости от количества вопросов
+        questions_count = int(default_questions_count)
+        if questions_count <= 10:
+            time_minutes = 5
+        elif questions_count <= 15:
+            time_minutes = 10
+        else:
+            time_minutes = 20
 
         # Форматируем текст с настройками
         settings_text = "⚙️ *Настройки бота*\n\n"
         settings_text += "Здесь вы можете настроить общие параметры работы бота:\n\n"
 
         settings_text += "*Текущие настройки:*\n"
-        settings_text += f"• Автоматические отчеты родителям: {'Включено' if ENABLE_PARENT_REPORTS else 'Отключено'}\n\n"
+        settings_text += f"• Автоматические отчеты родителям: {'Включено' if ENABLE_PARENT_REPORTS else 'Отключено'}\n"
+        settings_text += f"• Количество вопросов в тесте: {default_questions_count}\n"
+        settings_text += f"• Время на прохождение теста: {time_minutes} минут\n\n"
 
         settings_text += "Выберите настройку для изменения:"
 
