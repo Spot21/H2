@@ -4,10 +4,13 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
+import logging
+import traceback  # Для полной трассировки ошибок
 
 from database.models import User, TestResult, Topic, Achievement
 from database.db_manager import get_session
 
+logger = logging.getLogger(__name__)
 
 def get_user_stats(user_id: int, period: str = "all") -> Dict[str, Any]:
     """Получение статистики пользователя за указанный период"""
@@ -172,6 +175,156 @@ def get_user_stats(user_id: int, period: str = "all") -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": f"Ошибка при получении статистики: {str(e)}"}
 
+
+# Добавить в файл services/stats_service.py
+
+def get_problematic_questions(limit: int = 10) -> Dict[str, Any]:
+    """Получение списка самых проблемных вопросов (с наибольшим процентом ошибок)"""
+    try:
+        with get_session() as session:
+            # Импортируем необходимые компоненты
+            from sqlalchemy import func, text, case
+            import traceback
+
+            # Определяем, какую СУБД используем (SQLite или PostgreSQL)
+            from sqlalchemy import inspect
+            connection = session.connection()
+            inspector = inspect(connection)
+            dialect_name = inspector.engine.dialect.name.lower()
+
+            # Выбираем правильный SQL запрос в зависимости от диалекта
+            if dialect_name == 'postgresql':
+                # SQL для PostgreSQL
+                query = text("""
+                    SELECT 
+                        q.id AS question_id,
+                        q.text AS question_text,
+                        t.id AS topic_id,
+                        t.name AS topic_name,
+                        COUNT(qr.question_id) AS total_answers,
+                        SUM(CASE WHEN qr.is_correct = FALSE THEN 1 ELSE 0 END) AS wrong_answers,
+                        (SUM(CASE WHEN qr.is_correct = FALSE THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(qr.question_id), 0)) AS error_rate
+                    FROM 
+                        questions q
+                    JOIN
+                        topics t ON q.topic_id = t.id
+                    LEFT JOIN
+                        question_result qr ON q.id = qr.question_id
+                    GROUP BY 
+                        q.id, t.id, q.text, t.name
+                    HAVING 
+                        COUNT(qr.question_id) >= 5 -- минимум 5 ответов для статистической значимости
+                    ORDER BY 
+                        error_rate DESC NULLS LAST
+                    LIMIT :limit
+                """)
+            else:
+                # SQL для SQLite и других СУБД
+                query = text("""
+                    SELECT 
+                        q.id AS question_id,
+                        q.text AS question_text,
+                        t.id AS topic_id,
+                        t.name AS topic_name,
+                        COUNT(qr.question_id) AS total_answers,
+                        SUM(CASE WHEN qr.is_correct = 0 THEN 1 ELSE 0 END) AS wrong_answers,
+                        (SUM(CASE WHEN qr.is_correct = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(qr.question_id)) AS error_rate
+                    FROM 
+                        questions q
+                    JOIN
+                        topics t ON q.topic_id = t.id
+                    LEFT JOIN
+                        question_result qr ON q.id = qr.question_id
+                    GROUP BY 
+                        q.id, t.id, q.text, t.name
+                    HAVING 
+                        COUNT(qr.question_id) >= 5 -- минимум 5 ответов для статистической значимости
+                    ORDER BY 
+                        error_rate DESC
+                    LIMIT :limit
+                """)
+
+            # Выполняем запрос
+            results = session.execute(query, {"limit": limit}).fetchall()
+
+            if not results:
+                return {
+                    "success": True,
+                    "has_data": False,
+                    "message": "Недостаточно данных для анализа проблемных вопросов"
+                }
+
+            # Преобразуем результаты в список словарей
+            problematic_questions = []
+            for row in results:
+                problematic_questions.append({
+                    "question_id": row.question_id,
+                    "question_text": row.question_text,
+                    "topic_id": row.topic_id,
+                    "topic_name": row.topic_name,
+                    "total_answers": row.total_answers,
+                    "wrong_answers": row.wrong_answers,
+                    "error_rate": round(row.error_rate, 1) if row.error_rate is not None else 0
+                })
+
+            # Создаем график для топ-5 проблемных вопросов
+            chart = None
+            if len(problematic_questions) > 0:
+                try:
+                    import matplotlib.pyplot as plt
+                    from io import BytesIO
+
+                    # Берем только топ-5 для графика
+                    top_5 = problematic_questions[:5]
+
+                    # Создаем данные для графика
+                    question_labels = [f"Вопрос {q['question_id']}" for q in top_5]
+                    error_rates = [q['error_rate'] for q in top_5]
+
+                    # Создаем график
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    bars = ax.bar(question_labels, error_rates, color='salmon')
+
+                    # Добавляем подписи значений
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width() / 2., height + 1,
+                                f'{height:.1f}%', ha='center', va='bottom')
+
+                    ax.set_ylim(0, 105)  # Устанавливаем предел шкалы
+                    ax.set_title('Топ-5 самых сложных вопросов')
+                    ax.set_ylabel('Процент ошибок (%)')
+                    ax.set_xlabel('Вопросы')
+                    ax.grid(axis='y', linestyle='--', alpha=0.7)
+
+                    plt.tight_layout()
+
+                    # Сохраняем график в буфер
+                    buffer = BytesIO()
+                    plt.savefig(buffer, format='png')
+                    buffer.seek(0)
+                    plt.close(fig)  # Закрываем фигуру
+
+                    chart = buffer
+                except ImportError as import_err:
+                    logger.error(f"Ошибка импорта библиотеки для графика: {import_err}")
+                except ValueError as val_err:
+                    logger.error(f"Ошибка данных для графика: {val_err}")
+                except Exception as chart_error:
+                    logger.error(f"Ошибка при создании графика для проблемных вопросов: {chart_error}")
+                    logger.error(traceback.format_exc())
+
+            return {
+                "success": True,
+                "has_data": True,
+                "problematic_questions": problematic_questions,
+                "chart": chart
+            }
+
+    except Exception as e:
+        logger.error(f"Ошибка при получении проблемных вопросов: {e}")
+        logger.error(traceback.format_exc())
+        return {"success": False, "message": f"Ошибка при получении проблемных вопросов: {str(e)}"}
 
 def update_user_stats(user_id: int) -> Dict[str, Any]:
     """Обновление общей статистики пользователя после прохождения теста"""
