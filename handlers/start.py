@@ -56,8 +56,8 @@ class StartHandler:
                     username=username,
                     full_name=full_name,
                     role=role or "student",  # По умолчанию считаем ученика
-                    created_at=datetime.utcnow(),
-                    last_active=datetime.utcnow()
+                    created_at=datetime.now(),
+                    last_active=datetime.now()
                 )
                 session.add(new_user)
                 session.commit()
@@ -80,7 +80,7 @@ class StartHandler:
                 # Обновляем информацию о пользователе
                 db_user.username = username
                 db_user.full_name = full_name
-                db_user.last_active = datetime.utcnow()
+                db_user.last_active = datetime.now()
                 session.commit()
 
                 # Приветствуем существующего пользователя
