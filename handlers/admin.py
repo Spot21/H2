@@ -787,6 +787,117 @@ class AdminHandler:
                 ]])
             )
 
+    async def show_question_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Показ детального анализа проблемных вопросов"""
+        query = update.callback_query
+        user_id = update.effective_user.id
+
+        # Проверка прав администратора
+        if str(user_id) not in ADMINS:
+            await query.edit_message_text(
+                "У вас нет прав для доступа к этой информации."
+            )
+            return
+
+        try:
+            # Получаем расширенную статистику проблемных вопросов
+            from services.stats_service import get_problematic_questions
+            result = get_problematic_questions(limit=20)  # Увеличиваем лимит для подробного анализа
+
+            if not result["success"]:
+                await query.edit_message_text(
+                    f"Ошибка при получении статистики: {result['message']}"
+                )
+                return
+
+            if not result.get("has_data", False):
+                # Создаем клавиатуру для возврата
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_problematic_questions")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await query.edit_message_text(
+                    "Нет данных о проблемных вопросах для детального анализа. Возможно, еще не было пройдено достаточно тестов.",
+                    reply_markup=reply_markup
+                )
+                return
+
+            # Форматируем текст с детальным анализом
+            problematic_questions = result["problematic_questions"]
+
+            # Сортируем вопросы по уровню ошибок
+            problematic_questions.sort(key=lambda q: q["error_rate"], reverse=True)
+
+            text = "🔍 *Детальный анализ проблемных вопросов*\n\n"
+            text += "Ниже представлен подробный анализ вопросов, вызывающих наибольшие затруднения у учеников.\n\n"
+
+            # Группируем вопросы по темам
+            topics_data = {}
+            for question in problematic_questions:
+                topic_id = question["topic_id"]
+                if topic_id not in topics_data:
+                    topics_data[topic_id] = {
+                        "name": question["topic_name"],
+                        "questions": [],
+                        "avg_error_rate": 0
+                    }
+                topics_data[topic_id]["questions"].append(question)
+
+            # Рассчитываем средний процент ошибок для каждой темы
+            for topic_id, topic_data in topics_data.items():
+                if topic_data["questions"]:
+                    topic_data["avg_error_rate"] = sum(q["error_rate"] for q in topic_data["questions"]) / len(
+                        topic_data["questions"])
+
+            # Сортируем темы по среднему проценту ошибок
+            sorted_topics = sorted(topics_data.items(), key=lambda x: x[1]["avg_error_rate"], reverse=True)
+
+            # Выводим статистику по темам
+            text += "*Статистика по темам:*\n"
+            for topic_id, topic_data in sorted_topics:
+                topic_name = topic_data["name"]
+                avg_error = topic_data["avg_error_rate"]
+                questions_count = len(topic_data["questions"])
+
+                text += f"• *{topic_name}*: {avg_error:.1f}% ошибок (всего вопросов: {questions_count})\n"
+
+            text += "\n*Топ-10 самых проблемных вопросов:*\n"
+            for i, question in enumerate(problematic_questions[:10], 1):
+                short_question = question["question_text"][:50] + "..." if len(question["question_text"]) > 50 else \
+                question["question_text"]
+                text += f"{i}. *{short_question}*\n"
+                text += f"   Тема: {question['topic_name']}\n"
+                text += f"   Процент ошибок: {question['error_rate']}%\n"
+                text += f"   Всего ответов: {question['total_answers']}\n\n"
+
+            # Рекомендации по улучшению
+            text += "*Рекомендации:*\n"
+            text += "• Обратите внимание на темы с высоким процентом ошибок\n"
+            text += "• Рассмотрите возможность пересмотра формулировок сложных вопросов\n"
+            text += "• Добавьте подробные объяснения к проблемным вопросам\n"
+            text += "• Создайте дополнительные материалы по сложным темам\n"
+
+            # Создаем клавиатуру для возврата
+            keyboard = [
+                [InlineKeyboardButton("🔙 Назад к проблемным вопросам", callback_data="admin_problematic_questions")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Отправляем сообщение с текстом
+            await query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+
+        except Exception as e:
+            logger.error(f"Error in show_question_analysis: {e}")
+            logger.error(traceback.format_exc())
+            await query.edit_message_text(
+                f"Произошла ошибка при анализе проблемных вопросов: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="admin_problematic_questions")
+                ]])
+            )
+
     async def handle_admin_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик нажатий кнопок в панели администратора"""
         global new_state
@@ -1106,6 +1217,9 @@ class AdminHandler:
 
                 # Обновляем состояние
                 context.user_data["admin_state"] = "entering_question_text"
+
+            elif query.data == "admin_question_analysis":
+                await self.show_question_analysis(update, context)
 
             elif query.data == "admin_back_main":
                 # Возврат в главное меню администратора
