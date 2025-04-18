@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Table
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -32,8 +32,8 @@ class User(Base):
     username = Column(String, nullable=True)
     full_name = Column(String, nullable=True)
     role = Column(String, nullable=False)  # student, parent, admin
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_active = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    last_active = Column(DateTime, default=datetime.now(timezone.utc))
     settings = Column(String, nullable=True)  # JSON строка с настройками пользователя
 
     # Отношения
@@ -49,6 +49,13 @@ class User(Base):
         backref="parents"
     )
 
+class BotSettings(Base):
+    __tablename__ = 'bot_settings'
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String, nullable=False, unique=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
 
 class Topic(Base):
     __tablename__ = 'topics'
@@ -89,7 +96,7 @@ class TestResult(Base):
     max_score = Column(Float, nullable=False)
     percentage = Column(Float, nullable=False)
     time_spent = Column(Integer, nullable=True)  # в секундах
-    completed_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     # Отношения
     user = relationship("User", back_populates="results")
@@ -104,7 +111,7 @@ class Achievement(Base):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    achieved_at = Column(DateTime, default=datetime.utcnow)
+    achieved_at = Column(DateTime, default=datetime.now(timezone.utc))
     badge_url = Column(String, nullable=True)
     points = Column(Integer, default=0)
 
@@ -120,7 +127,7 @@ class Notification(Base):
     title = Column(String, nullable=False)
     message = Column(String, nullable=False)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
     scheduled_at = Column(DateTime, nullable=True)
     notification_type = Column(String, nullable=False)  # reminder, report, achievement
 
