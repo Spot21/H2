@@ -148,6 +148,9 @@ def admin_settings_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Отчеты родителям", callback_data="admin_setting_reports")
         ],
         [
+            InlineKeyboardButton("🔢 Количество вопросов", callback_data="admin_setting_questions_count")
+        ],
+        [
             InlineKeyboardButton("🔙 Назад", callback_data="admin_back_main")
         ]
     ]
@@ -158,7 +161,9 @@ def admin_questions_count_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [
             InlineKeyboardButton("5", callback_data="admin_set_questions_5"),
-            InlineKeyboardButton("10", callback_data="admin_set_questions_10"),
+            InlineKeyboardButton("10", callback_data="admin_set_questions_10")
+        ],
+        [
             InlineKeyboardButton("15", callback_data="admin_set_questions_15"),
             InlineKeyboardButton("20", callback_data="admin_set_questions_20")
         ],
