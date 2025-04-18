@@ -1,5 +1,6 @@
 import logging
 import traceback
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -86,30 +87,34 @@ class StudentHandler:
         try:
             if query.data == "student_recommendations":
                 await self.show_recommendations(update, context)
-
             elif query.data.startswith("quiz_start_"):
                 # Начало теста по выбранной теме
                 topic_id_str = query.data.replace("quiz_start_", "")
-
                 # Обрабатываем случайную тему
                 if topic_id_str == "random":
                     import random
                     topics = self.quiz_service.get_topics()
                     if not topics:
                         await query.edit_message_text("К сожалению, доступных тем нет.")
+
                         return
                     topic = random.choice(topics)
                     topic_id = topic["id"]
+
                 else:
                     topic_id = int(topic_id_str)
+                # Вместо немедленного начала теста, показываем предупреждение
+                await self.start_test_with_topic(update, context, topic_id)
 
+            elif query.data.startswith("quiz_confirm_start_"):
+                # Подтверждение начала теста
+                topic_id = int(query.data.replace("quiz_confirm_start_", ""))
                 # Начинаем тест
                 quiz_data = self.quiz_service.start_quiz(user_id, topic_id)
-
                 if not quiz_data["success"]:
                     await query.edit_message_text(quiz_data["message"])
-                    return
 
+                    return
                 # Показываем первый вопрос
                 await self.show_question(update, context)
 
@@ -259,6 +264,18 @@ class StudentHandler:
         question_num = self.quiz_service.active_quizzes[user_id]["current_question"] + 1
         total_questions = len(self.quiz_service.active_quizzes[user_id]["questions"])
 
+        # Вычисляем оставшееся время
+        remaining_time = "Неизвестно"
+        quiz_data = self.quiz_service.active_quizzes[user_id]
+        if "end_time" in quiz_data:
+            time_left = quiz_data["end_time"] - datetime.now()
+            if time_left.total_seconds() > 0:
+                minutes = int(time_left.total_seconds() // 60)
+                seconds = int(time_left.total_seconds() % 60)
+                remaining_time = f"{minutes:02d}:{seconds:02d}"
+            else:
+                remaining_time = "00:00"
+
         # Используем соответствующую клавиатуру в зависимости от типа вопроса
         question_type = current_question["question_type"]
         options = current_question["options"]
@@ -276,8 +293,8 @@ class StudentHandler:
             # Fallback
             reply_markup = single_question_keyboard(question_id, options)
 
-        # Форматируем текст вопроса
-        question_text = f"*Вопрос {question_num}/{total_questions}*\n\n{current_question['text']}"
+        # Форматируем текст вопроса с указанием оставшегося времени
+        question_text = f"*Вопрос {question_num}/{total_questions}* | ⏱️ *{remaining_time}*\n\n{current_question['text']}"
 
         # Добавляем информацию о типе вопроса
         if question_type == "multiple":
@@ -347,10 +364,20 @@ class StudentHandler:
         total_questions = result["total_questions"]
         percentage = result["percentage"]
         topic_id = result.get("topic_id", 0)
+        time_spent = result.get("time_spent", 0)
+
+        # Форматируем время
+        if time_spent > 0:
+            minutes = time_spent // 60
+            seconds = time_spent % 60
+            time_str = f"{minutes} мин {seconds} сек"
+        else:
+            time_str = "Не определено"
 
         result_text = f"📊 *Результаты теста*\n\n"
         result_text += f"✅ Правильных ответов: {correct_count} из {total_questions}\n"
-        result_text += f"📈 Процент успеха: {percentage}%\n\n"
+        result_text += f"📈 Процент успеха: {percentage}%\n"
+        result_text += f"⏱️ Затраченное время: {time_str}\n\n"
 
         # Добавляем эмодзи в зависимости от результата
         if percentage >= 90:
@@ -382,14 +409,43 @@ class StudentHandler:
         logger.info(f"Запуск теста для темы {topic_id}")
         try:
             user_id = update.effective_user.id
-            quiz_data = self.quiz_service.start_quiz(user_id, topic_id)
 
-            if not quiz_data["success"]:
-                await update.callback_query.edit_message_text(quiz_data["message"])
-                return
+            # Получаем название темы
+            with get_session() as session:
+                topic = session.query(Topic).get(topic_id)
+                if not topic:
+                    await update.callback_query.edit_message_text("Тема не найдена.")
+                    return
+                topic_name = topic.name
 
-            # Показываем первый вопрос
-            await self.show_question(update, context)
+            # Получаем настройки теста
+            from services.settings_service import get_quiz_settings
+            quiz_settings = get_quiz_settings()
+            question_count = quiz_settings["questions_count"]
+            time_minutes = quiz_settings["time_minutes"]
+
+            # Показываем предупреждение о количестве вопросов и времени
+            confirmation_text = (
+                f"📝 *Тестирование по теме: {topic_name}*\n\n"
+                f"• Количество вопросов: {question_count}\n"
+                f"• Ограничение по времени: {time_minutes} минут\n\n"
+                "Готовы начать тестирование?"
+            )
+
+            # Создаем клавиатуру для подтверждения
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Начать тест", callback_data=f"quiz_confirm_start_{topic_id}"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="common_start_test")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.callback_query.edit_message_text(
+                confirmation_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
         except Exception as e:
             logger.error(f"Error in start_test_with_topic: {e}")
             await update.callback_query.edit_message_text(
@@ -509,7 +565,8 @@ class StudentHandler:
             with get_session() as session:
                 user = session.query(User).filter(User.telegram_id == user_id).first()
                 if not user:
-                    await query.edit_message_text("Пользователь не найден. Пожалуйста, используйте /start для регистрации.")
+                    await query.edit_message_text(
+                        "Пользователь не найден. Пожалуйста, используйте /start для регистрации.")
                     return
 
                 # Получаем последний завершенный тест
@@ -529,12 +586,19 @@ class StudentHandler:
                     if topic:
                         topic_name = topic.name
 
+                # Форматируем время
+                time_str = "Не определено"
+                if last_test.time_spent:
+                    minutes = last_test.time_spent // 60
+                    seconds = last_test.time_spent % 60
+                    time_str = f"{minutes} мин {seconds} сек"
+
                 # Формируем детальный отчет
                 detailed_text = f"📋 *Детальный анализ теста*\n\n"
                 detailed_text += f"*Тема:* {topic_name}\n"
                 detailed_text += f"*Дата:* {last_test.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
                 detailed_text += f"*Результат:* {last_test.score} из {last_test.max_score} ({last_test.percentage}%)\n"
-                detailed_text += f"*Время:* {self.format_time(last_test.time_spent) if last_test.time_spent else 'Не измерено'}\n\n"
+                detailed_text += f"*Время:* {time_str}\n\n"
 
                 # Если есть данные о вопросах и ответах, можно их тоже показать
                 detailed_text += "*Вопросы и ответы:*\n"
@@ -629,13 +693,14 @@ class StudentHandler:
 
     async def show_recommendations(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показ персонализированных рекомендаций для ученика"""
+        global stats_data
         user_id = update.effective_user.id
         query = update.callback_query
 
         try:
             # Получаем расширенную статистику
-            from services.stats_service import get_extended_student_stats
-            result = get_extended_student_stats(user_id, "month")
+            from services.stats_service import get_user_stats
+            result = get_user_stats(user_id, "month")
 
             if not result["success"]:
                 if query:
@@ -657,19 +722,35 @@ class StudentHandler:
                     await update.message.reply_text(message, reply_markup=reply_markup)
                 return
 
-            # Формируем текст с рекомендациями
-            recommendations = result.get("recommendations", [])
-            weak_topics = result.get("weak_topics", [])
-            comparison = result.get("comparison", {})
+            # Определяем слабые темы
+            try:
+                stats_data = result["stats"]
 
+                # Считаем темы с результатом ниже 70% слабыми
+                weak_topics = []
+                with get_session() as session:
+                    topic_results = session.query(TestResult, Topic).join(
+                        Topic, TestResult.topic_id == Topic.id
+                    ).filter(
+                        TestResult.user_id == user_id,
+                        TestResult.percentage < 70
+                    ).all()
+
+                    for result, topic in topic_results:
+                        weak_topics.append({
+                            "id": topic.id,
+                            "name": topic.name,
+                            "avg_score": round(result.percentage, 1)
+                        })
+            except Exception as e:
+                logger.error(f"Ошибка при получении слабых тем: {e}")
+                weak_topics = []
+
+            # Формируем текст с рекомендациями
             text = "🔍 *Персональные рекомендации*\n\n"
 
             # Общая информация
-            text += f"Ваш средний результат: *{result['stats']['average_score']}%*\n"
-
-            if comparison:
-                text += f"Средний результат всех учеников: *{comparison['global_avg_score']}%*\n"
-                text += f"Ваш результат *{comparison['position']}* среднего на *{abs(comparison['difference'])}%*\n\n"
+            text += f"Ваш средний результат: *{stats_data['average_score']}%*\n\n"
 
             # Рекомендации по слабым темам
             if weak_topics:
@@ -678,25 +759,12 @@ class StudentHandler:
                     text += f"• {topic['name']} - {topic['avg_score']}%\n"
                 text += "\n"
 
-            # Дополнительные рекомендации
-            if recommendations:
-                text += "*Рекомендации:*\n"
-                for rec in recommendations:
-                    text += f"• *{rec['title']}*\n"
-                    text += f"  {rec['description']}\n"
-
-                    if rec["type"] == "regularity" and rec.get("items"):
-                        text += "  Обратите внимание на периоды без тестирования:\n"
-                        for item in rec["items"][:3]:  # Ограничиваем количество
-                            text += f"  {item['start']} - {item['end']}\n"
-
-                    text += "\n"
-
             # Общие советы
             text += "*Общие советы:*\n"
             text += "• Занимайтесь регулярно, хотя бы 3-4 раза в неделю\n"
             text += "• Уделяйте особое внимание темам с низкими результатами\n"
-            text += "• Старайтесь улучшать предыдущие результаты, а не только проходить новые тесты\n"
+            text += "• Старайтесь улучшать предыдущие результаты, проходя тесты несколько раз\n"
+            text += "• Используйте детальный анализ для изучения своих ошибок\n"
 
             # Создаем клавиатуру с кнопками действий
             keyboard = []
@@ -734,6 +802,7 @@ class StudentHandler:
 
         except Exception as e:
             logger.error(f"Error showing recommendations: {e}")
+            logger.error(traceback.format_exc())
             message = "Произошла ошибка при формировании рекомендаций. Пожалуйста, попробуйте позже."
 
             if query:
