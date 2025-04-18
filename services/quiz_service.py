@@ -4,7 +4,7 @@ import os
 import logging
 import traceback
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -87,9 +87,14 @@ class QuizService:
             topics = session.query(Topic).all()
             return [{"id": t.id, "name": t.name, "description": t.description} for t in topics]
 
-    def start_quiz(self, user_id: int, topic_id: int, question_count: int = 10) -> Dict[str, Any]:
+    def start_quiz(self, user_id: int, topic_id: int, question_count: int = None) -> Dict[str, Any]:
         """Начать новый тест для пользователя"""
         logger.info(f"Начинаем тест для пользователя {user_id} по теме {topic_id}")
+
+        # Получаем количество вопросов из настроек, если не указано
+        if question_count is None:
+            from services.settings_service import get_setting
+            question_count = int(get_setting("default_questions_count", "10"))
 
         with get_session() as session:
             # Получаем вопросы для выбранной темы
@@ -110,6 +115,17 @@ class QuizService:
 
             selected_questions = random.sample(questions, selected_count)
 
+            # Рассчитываем время окончания теста в зависимости от количества вопросов
+            start_time = datetime.now()
+            if question_count <= 10:
+                time_limit = 5 * 60  # 5 минут в секундах
+            elif question_count <= 15:
+                time_limit = 10 * 60  # 10 минут в секундах
+            else:
+                time_limit = 20 * 60  # 20 минут в секундах
+
+            end_time = start_time + timedelta(seconds=time_limit)
+
             # Создаём структуру теста
             quiz_data = {
                 "topic_id": topic_id,
@@ -127,13 +143,16 @@ class QuizService:
                 ],
                 "current_question": 0,
                 "answers": {},
-                "start_time": datetime.now(),
+                "start_time": start_time,
+                "end_time": end_time,
+                "time_limit": time_limit,
                 "is_completed": False
             }
 
             # Сохраняем тест в активных
             self.active_quizzes[user_id] = quiz_data
-            logger.info(f"Тест создан для пользователя {user_id} с {len(quiz_data['questions'])} вопросами")
+            logger.info(
+                f"Тест создан для пользователя {user_id} с {len(quiz_data['questions'])} вопросами, лимит времени: {time_limit} сек")
 
             return {"success": True, "quiz_data": quiz_data}
 
@@ -144,6 +163,15 @@ class QuizService:
             return None
 
         quiz_data = self.active_quizzes[user_id]
+
+        # Проверка времени
+        if "end_time" in quiz_data and datetime.now() > quiz_data["end_time"]:
+            # Время истекло, завершаем тест
+            logger.info(f"Время теста для пользователя {user_id} истекло, завершаем")
+            quiz_data["is_completed"] = True
+            # Завершаем тест с имеющимися ответами
+            return None
+
         if quiz_data["current_question"] >= len(quiz_data["questions"]):
             logger.warning(f"Индекс текущего вопроса превышает количество вопросов для пользователя {user_id}")
             return None
@@ -249,6 +277,14 @@ class QuizService:
             return {"success": False, "message": "Нет активного теста"}
 
         quiz_data = self.active_quizzes[user_id]
+
+        # Проверка времени
+        if "end_time" in quiz_data and datetime.now() > quiz_data["end_time"]:
+            # Время истекло, завершаем тест
+            quiz_data["is_completed"] = True
+            result = self.complete_quiz(user_id)
+            return {"success": True, "is_completed": True, "result": result, "message": "Время истекло"}
+
         question_index = quiz_data["current_question"]
 
         if question_index >= len(quiz_data["questions"]):
@@ -276,6 +312,14 @@ class QuizService:
             return {"success": False, "message": "Нет активного теста"}
 
         quiz_data = self.active_quizzes[user_id]
+
+        # Проверка времени
+        if "end_time" in quiz_data and datetime.now() > quiz_data["end_time"]:
+            # Время истекло, завершаем тест
+            quiz_data["is_completed"] = True
+            result = self.complete_quiz(user_id)
+            return {"success": True, "is_completed": True, "result": result, "message": "Время истекло"}
+
         question_index = quiz_data["current_question"]
 
         if question_index >= len(quiz_data["questions"]):
@@ -384,6 +428,16 @@ class QuizService:
         # Рассчитываем процент
         percentage = round((correct_count / total_questions) * 100, 1) if total_questions > 0 else 0
 
+        # Вычисляем затраченное время
+        start_time = quiz_data["start_time"]
+        end_time = datetime.now()
+
+        # Если тест завершился по времени, используем время окончания из настроек
+        if "end_time" in quiz_data and datetime.now() > quiz_data["end_time"]:
+            end_time = quiz_data["end_time"]
+
+        time_spent = int((end_time - start_time).total_seconds())
+
         # Сохраняем результаты в базу
         with get_session() as session:
             user = session.query(User).filter(User.telegram_id == user_id).first()
@@ -397,7 +451,7 @@ class QuizService:
                 score=correct_count,
                 max_score=total_questions,
                 percentage=percentage,
-                time_spent=(datetime.now() - quiz_data["start_time"]).seconds
+                time_spent=time_spent
             )
             session.add(test_result)
             session.commit()
@@ -441,7 +495,8 @@ class QuizService:
             "percentage": percentage,
             "question_results": question_results,
             "new_achievements": new_achievements,
-            "topic_id": quiz_data["topic_id"]
+            "topic_id": quiz_data["topic_id"],
+            "time_spent": time_spent
         }
 
     def get_notification_service(self) -> Optional['NotificationService']:
