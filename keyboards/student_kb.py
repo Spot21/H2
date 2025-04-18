@@ -140,6 +140,9 @@ def stats_period_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("За месяц", callback_data="common_stats_month"),
             InlineKeyboardButton("За год", callback_data="common_stats_year"),
             InlineKeyboardButton("За всё время", callback_data="common_stats_all")
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="common_back_to_main")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -151,6 +154,9 @@ def achievements_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("📊 Статистика", callback_data="common_stats"),
             InlineKeyboardButton("🏆 Таблица лидеров", callback_data="common_leaderboard")
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="common_back_to_main")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -168,7 +174,8 @@ def leaderboard_period_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("За всё время", callback_data="common_leaderboard_all")
         ],
         [
-            InlineKeyboardButton("🔙 Назад", callback_data="common_stats")
+            InlineKeyboardButton("🔙 Назад к статистике", callback_data="common_stats"),
+            InlineKeyboardButton("🏠 Главное меню", callback_data="common_back_to_main")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
