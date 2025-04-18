@@ -10,8 +10,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from database.models import Question, TestResult, User, Topic, Achievement
 from database.db_manager import get_session
-from utils.formatters import format_question_text
 from services.stats_service import update_user_stats
+from utils.formatters import format_question_text
 from utils.image_utils import get_image_path
 
 logger = logging.getLogger(__name__)
