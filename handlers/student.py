@@ -691,9 +691,10 @@ class StudentHandler:
                 parse_mode="Markdown"
             )
 
+    # Заменить в файле handlers/student.py метод show_recommendations на следующий:
+
     async def show_recommendations(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Показ персонализированных рекомендаций для ученика"""
-        global stats_data
         user_id = update.effective_user.id
         query = update.callback_query
 
@@ -736,14 +737,15 @@ class StudentHandler:
                         TestResult.percentage < 70
                     ).all()
 
-                    for result, topic in topic_results:
+                    for result_obj, topic in topic_results:
                         weak_topics.append({
                             "id": topic.id,
                             "name": topic.name,
-                            "avg_score": round(result.percentage, 1)
+                            "avg_score": round(result_obj.percentage, 1)
                         })
             except Exception as e:
                 logger.error(f"Ошибка при получении слабых тем: {e}")
+                logger.error(traceback.format_exc())
                 weak_topics = []
 
             # Формируем текст с рекомендациями
