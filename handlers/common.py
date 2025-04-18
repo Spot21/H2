@@ -133,6 +133,7 @@ class CommonHandler:
             student_handler = StudentHandler(self.quiz_service)
             await student_handler.show_recommendations(update, context)
 
+
         elif callback_data == "admin_problematic_questions":
             from handlers.admin import AdminHandler
             admin_handler = AdminHandler()
@@ -317,6 +318,40 @@ class CommonHandler:
                 # Устанавливаем период в качестве аргумента
                 context.args = [period]
                 await self.show_leaderboard(update, context, period)
+
+            elif callback_data == "common_back_to_main":
+                logger.debug(f"Возврат к главному меню")
+                # Получаем роль пользователя для отображения соответствующего главного меню
+                with get_session() as session:
+                    user = session.query(User).filter(User.telegram_id == user_id).first()
+                    if not user:
+                        await query.edit_message_text(
+                            "Произошла ошибка. Пожалуйста, используйте команду /start для начала работы с ботом."
+                        )
+                        return
+
+                    role = user.role
+
+                # Отображаем соответствующее главное меню
+                if role == "student":
+                    from keyboards.student_kb import student_main_keyboard
+                    reply_markup = student_main_keyboard()
+                elif role == "parent":
+                    from keyboards.parent_kb import parent_main_keyboard
+                    reply_markup = parent_main_keyboard()
+                elif role == "admin":
+                    from keyboards.admin_kb import admin_main_keyboard
+                    reply_markup = admin_main_keyboard()
+                else:
+                    # По умолчанию, если роль неизвестна
+                    from keyboards.student_kb import student_main_keyboard
+                    reply_markup = student_main_keyboard()
+
+                # Отображаем главное меню
+                await query.edit_message_text(
+                    "Выберите действие:",
+                    reply_markup=reply_markup
+                )
 
             else:
                 logger.warning(f"Неизвестный callback_data: {callback_data}")
